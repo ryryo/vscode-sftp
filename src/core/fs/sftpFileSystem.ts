@@ -7,6 +7,8 @@ import FileSystem, {
 } from './fileSystem';
 import RemoteFileSystem from './remoteFileSystem';
 import { SSHClient } from '../remote-client';
+import logger from '../../logger';
+import { isUnsafeRemoteSegment } from '../../utils';
 
 type FileHandle = Buffer;
 
@@ -20,7 +22,6 @@ interface WriteStream extends Writable {
   path: string;
   flags: string;
   mode: number;
-  destroy(): void;
   close(): void;
 }
 
@@ -255,6 +256,7 @@ export default class SFTPFileSystem extends RemoteFileSystem {
       this.sftp.symlink(targetPath, path, err => {
         if (err) {
           reject(err);
+          return;
         }
         resolve();
       });
@@ -322,9 +324,21 @@ export default class SFTPFileSystem extends RemoteFileSystem {
           return;
         }
 
-        const fileEntries = result.map(item =>
-          this.toFileEntry(this.pathResolver.join(dir, item.filename), item)
-        );
+        const fileEntries = result
+          .filter(item => {
+            if (isUnsafeRemoteSegment(item.filename)) {
+              logger.warn(
+                `sftp: ignoring listing entry with unsafe name ${JSON.stringify(
+                  item.filename
+                )} in ${dir}`
+              );
+              return false;
+            }
+            return true;
+          })
+          .map(item =>
+            this.toFileEntry(this.pathResolver.join(dir, item.filename), item)
+          );
         resolve(fileEntries);
       });
     });
@@ -395,16 +409,40 @@ export default class SFTPFileSystem extends RemoteFileSystem {
       mode?: number;
       autoClose?: boolean;
       handle?: FileHandle;
+      onProgress?: (bytes: number) => void;
     }
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const writer: WriteStream = this.sftp.createWriteStream(path, option);
-      writer.once('error', reject).once('finish', resolve); // transffered
+      // Strip onProgress before passing to ssh2: it is not a valid stream option.
+      const { onProgress, ...streamOpt } = option || {};
+      const writer: WriteStream = this.sftp.createWriteStream(path, streamOpt);
+      // Named so we can detach it on error — otherwise a few chunks can still fire addBytes after
+      // the transfer already rejected, inflating the counter.
+      const onData = onProgress ? (chunk: any) => onProgress(chunk.length) : null;
+      const stopCounting = () => { if (onData) input.removeListener('data', onData); };
+      // Resolve on 'finish' (all data flushed). Also resolve on 'close' as a fallback: ssh2's
+      // write stream does not reliably emit 'finish' for a zero-byte write (e.g. creating an empty
+      // file), but it does close the handle. 'error' is registered first, so a failed transfer
+      // still rejects rather than resolves; for a normal upload 'finish' fires before 'close'.
+      writer
+        .once('error', err => {
+          // Detach and kill the source too: a dead writer otherwise leaves input piping into
+          // nowhere, with its server-side read handle never closed until GC.
+          stopCounting();
+          input.unpipe(writer);
+          input.destroy();
+          reject(err);
+        })
+        .once('finish', resolve)
+        .once('close', resolve); // transffered
 
       input.once('error', err => {
+        stopCounting();
         reject(err);
         writer.end();
       });
+      // Attach the progress listener in the same tick as pipe so no chunks can be lost.
+      if (onData) input.on('data', onData);
       input.pipe(writer);
     });
   }

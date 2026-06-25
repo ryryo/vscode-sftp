@@ -11,6 +11,9 @@ import { FileHandleOption } from '../option';
 import { flatten } from '../../utils';
 import logger from '../../logger';
 import { getOpenTextDocuments } from '../../host';
+import * as transferProgress from '../../ui/transferProgress';
+import * as operationReport from '../../ui/operationReport';
+import { findAllFileService } from '../../modules/serviceManager';
 
 interface InternalTransferOption extends FileHandleOption, TransferTaskTransferOption {}
 
@@ -183,7 +186,13 @@ async function transferWithType(
   }
 }
 
-async function removeFile(file: string, fs: FileSystem, fileType: FileType, option) {
+async function removeFile(
+  file: string,
+  fs: FileSystem,
+  fileType: FileType,
+  option,
+  scope?: 'server' | 'local'
+) {
   if (option.ignore && option.ignore(file)) {
     return;
   }
@@ -201,6 +210,14 @@ async function removeFile(file: string, fs: FileSystem, fileType: FileType, opti
     default:
       break;
   }
+
+  if (operationReport.isActive() && scope) {
+    operationReport.addRow({
+      action: 'deleted',
+      path: file,
+      scope,
+    });
+  }
 }
 
 async function _sync(
@@ -215,6 +232,16 @@ async function _sync(
   }
 
   const altDirection = getAltDirection(transferDirection);
+
+  // For `bothDiretions`, items that flow the OTHER way (e.g. server → local during a
+  // local → remote sync) must swap the filesystems too, not merely carry a flipped direction
+  // label. Without the swap we'd read the remote path from the local fs (ENOENT, so the file is
+  // silently never downloaded) and try to write the local path onto the remote fs.
+  const routeFsByDirection = (direction: TransferDirection) =>
+    direction === transferDirection
+      ? { srcFs, targetFs }
+      : { srcFs: targetFs, targetFs: srcFs };
+
   const syncFiles = (srcFileEntries: FileEntry[], desFileEntries: FileEntry[]) => {
     const srcFileTable = toHash(srcFileEntries, 'id', fileEntry => ({
       ...fileEntry,
@@ -227,7 +254,7 @@ async function _sync(
     }));
 
     const file2trans: [string, string, TransferDirection, InternalTransferOption][] = [];
-    const dir2trans: [string, string][] = [];
+    const dir2trans: [string, string, TransferDirection][] = [];
     const dir2sync: [string, string][] = [];
 
     const fileMissed: string[] = [];
@@ -297,7 +324,7 @@ async function _sync(
       const fspath = targetFs.pathResolver.join(targetFsPath, srcFile.name);
       switch (srcFile.type) {
         case FileType.Directory:
-          dir2trans.push([srcFile.fspath, fspath]);
+          dir2trans.push([srcFile.fspath, fspath, transferDirection]);
           break;
         case FileType.File:
         case FileType.SymbolicLink:
@@ -326,7 +353,7 @@ async function _sync(
           const fspath = srcFs.pathResolver.join(srcFsPath, file.name);
           switch (file.type) {
             case FileType.Directory:
-              dir2trans.push([file.fspath, fspath]);
+              dir2trans.push([file.fspath, fspath, altDirection]);
               break;
             case FileType.File:
             case FileType.SymbolicLink:
@@ -366,13 +393,16 @@ async function _sync(
     }
 
     // side-effect
-    fileMissed.forEach(file => removeFile(file, targetFs, FileType.File, transferOption));
-    dirMissed.forEach(file => removeFile(file, targetFs, FileType.Directory, transferOption));
+    const deleteScope: 'server' | 'local' =
+      transferDirection === TransferDirection.LOCAL_TO_REMOTE ? 'server' : 'local';
+    fileMissed.forEach(file => removeFile(file, targetFs, FileType.File, transferOption, deleteScope));
+    dirMissed.forEach(file => removeFile(file, targetFs, FileType.Directory, transferOption, deleteScope));
 
     const transFilePromise = file2trans.map(([src, target, direction, option]) =>
       transferFile(
         {
           ...config,
+          ...routeFsByDirection(direction),
           transferDirection: direction,
           transferOption: option,
           srcFsPath: src,
@@ -383,10 +413,12 @@ async function _sync(
       )
     );
 
-    const transDirPromise = dir2trans.map(([src, target]) =>
+    const transDirPromise = dir2trans.map(([src, target, direction]) =>
       transferFolder(
         {
           ...config,
+          ...routeFsByDirection(direction),
+          transferDirection: direction,
           srcFsPath: src,
           targetFsPath: target,
         },
@@ -420,6 +452,41 @@ async function _sync(
 }
 
 export { TransferOption, SyncOption, TransferDirection };
+
+// Cancel all in-progress transfers across every registered FileService.
+export function cancelAllTransfers(): void {
+  findAllFileService(f => f.isTransferring()).forEach(f => f.cancelTransferTasks());
+}
+
+// Return a progress notification title for transfer commands, or null for others.
+export function transferProgressTitle(commandId: string): string | null {
+  if (/^sftp\.upload\./.test(commandId)) {
+    return 'SFTP: uploading…';
+  }
+  if (/^sftp\.download\./.test(commandId)) {
+    return 'SFTP: downloading…';
+  }
+  if (/^sftp\.sync\./.test(commandId)) {
+    return 'SFTP: syncing…';
+  }
+  // Single-click tree download via editInLocal — show progress without an operation report.
+  if (/\.editInLocal$/.test(commandId)) {
+    return 'SFTP: downloading…';
+  }
+  return null;
+}
+
+// Wrap transfer work in a cancellable byte-progress notification when the command warrants one.
+export async function runWithTransferProgress<T>(
+  commandId: string,
+  work: () => Promise<T>
+): Promise<T> {
+  const title = transferProgressTitle(commandId);
+  if (!title) {
+    return work();
+  }
+  return transferProgress.withTransferProgress(title, cancelAllTransfers, work);
+}
 
 export async function transfer(
   config: TransferHandleConfig<TransferOption>,

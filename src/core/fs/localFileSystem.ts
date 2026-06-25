@@ -88,13 +88,34 @@ export default class LocalFileSystem extends FileSystem {
         return reject(new Error('fd is not a number'));
       }
 
-      const writer = fs.createWriteStream(path, option as any);
-      writer.once('error', reject).once('finish', resolve); // transffered
+      const { onProgress, ...streamOption } = option || {};
+      const writer = fs.createWriteStream(path, streamOption as any);
+      const onData = onProgress ? (chunk: Buffer) => onProgress(chunk.length) : null;
+      const stopCounting = () => {
+        if (onData) {
+          input.removeListener('data', onData);
+        }
+      };
+      writer
+        .once('error', err => {
+          stopCounting();
+          input.unpipe(writer);
+          input.destroy();
+          reject(err);
+        })
+        .once('finish', () => {
+          stopCounting();
+          resolve();
+        }); // transffered
 
       input.once('error', err => {
+        stopCounting();
         reject(err);
         writer.end();
       });
+      if (onData) {
+        input.on('data', onData);
+      }
       input.pipe(writer);
     });
   }

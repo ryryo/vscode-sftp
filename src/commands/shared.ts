@@ -5,6 +5,21 @@ import { getAllFileService } from '../modules/serviceManager';
 import { ExplorerItem } from '../modules/remoteExplorer';
 import { getActiveTextEditor } from '../host';
 import { listFiles, toLocalPath, simplifyPath } from '../helper';
+import { isUnsafeRemoteSegment } from '../utils';
+
+export function validateRemoteEntryName(input: string): string | undefined {
+  const name = input || '';
+  if (!name.trim()) {
+    return 'Name must not be empty';
+  }
+  if (name.startsWith('/')) {
+    return 'Enter a name, not an absolute path';
+  }
+  if (name.split('/').some(segment => isUnsafeRemoteSegment(segment))) {
+    return 'Invalid name: ".." and special characters are not allowed';
+  }
+  return undefined;
+}
 
 function configIngoreFilterCreator(config) {
   if (!config || !config.ignore) {
@@ -45,7 +60,7 @@ function createFileSelector(filterCreator?) {
 }
 
 export function selectContext(): Promise<Uri | undefined> {
-  return new Promise((resolve, reject) => {
+  return new Promise<Uri | undefined>((resolve, reject) => {
     const sercives = getAllFileService();
     const projectsList = sercives
       .map(service => ({
@@ -70,7 +85,7 @@ export function selectContext(): Promise<Uri | undefined> {
         }
 
         // cancel selection
-        resolve();
+        resolve(undefined);
       }, reject);
   });
 }

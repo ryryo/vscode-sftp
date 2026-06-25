@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import logger from '../logger';
-import { realpathSync } from 'fs';
 import app from '../app';
 import StatusBarItem from '../ui/statusBarItem';
 import { onDidOpenTextDocument, onDidSaveTextDocument, showConfirmMessage } from '../host';
@@ -11,8 +10,8 @@ import {
   findAllFileService,
   disposeFileService,
 } from './serviceManager';
-import { reportError, isValidFile, isConfigFile, isInWorkspace } from '../helper';
-import { downloadFile, uploadFile } from '../fileHandlers';
+import { reportError, isValidFile, isConfigFile, isInWorkspace, realpathIfCaseOnly } from '../helper';
+import { downloadFile, uploadFile, allHandleCtxFromUri, FileHandlerContext } from '../fileHandlers';
 
 let workspaceWatcher: vscode.Disposable;
 
@@ -44,15 +43,70 @@ async function handleFileSave(uri: vscode.Uri) {
     return;
   }
 
+  // With profiles, upload on save to every profile whose uploadOnSave is true.
+  if (fileService.getAvailableProfiles().length > 0) {
+    // Normalise the on-disk casing so the upload uses the canonical name (#589) — only a case-only
+    // realpath change is adopted; a structural one (symlink / subst) is left as-is.
+    const fspath = realpathIfCaseOnly(uri.fsPath);
+    const fileUri = vscode.Uri.file(fspath);
+    let targets: FileHandlerContext[];
+    try {
+      targets = allHandleCtxFromUri(fileUri).filter(ctx => ctx.config.uploadOnSave === true);
+    } catch (error) {
+      logger.error(error, `upload-on-save ${fspath}`);
+      return;
+    }
+    if (targets.length === 0) {
+      return;
+    }
+    logger.info(`[file-save] [profiles] ${fspath}`);
+    const results = await Promise.all(
+      targets.map(ctx =>
+        uploadFile(ctx).then(
+          () => ({ ctx, error: null as any }),
+          (error: any) => ({ ctx, error })
+        )
+      )
+    );
+    const failures = results.filter(r => r.error != null);
+    if (failures.length) {
+      const labelOf = (ctx: FileHandlerContext) =>
+        ctx.config.name || ctx.config.host || '?';
+      failures.forEach(({ ctx, error }) => {
+        const host = ctx.config && ctx.config.host;
+        logger.error(error, `upload → ${labelOf(ctx)}${host ? ` (${host})` : ''} ${fspath}`);
+      });
+      const total = targets.length;
+      const failedNames = failures.map(({ ctx }) => labelOf(ctx)).join(', ');
+      const allFailed = failures.length === total;
+      app.sftpBarItem.updateStatus(
+        allFailed ? StatusBarItem.Status.error : StatusBarItem.Status.warn
+      );
+      app.sftpBarItem.showMsg(
+        allFailed
+          ? `upload failed: ${failedNames}`
+          : `uploaded to ${total - failures.length}/${total}, failed: ${failedNames}`,
+        fspath,
+        5000
+      );
+    }
+    return;
+  }
+
   const config = fileService.getConfig();
   if (config.uploadOnSave) {
-    const fspath = await realpathSync.native(uri.fsPath);
+    // Normalise the on-disk casing so the upload uses the canonical name (#589), but ONLY when realpath
+    // differs by case alone. A structural realpath change — a resolved symlink (Linux/macOS) or an
+    // expanded subst/mapped drive (Windows) — is rejected: the service is registered under the path the
+    // workspace was opened with, so adopting a different real path makes the trie lookup miss and
+    // resurfaces as "Config Not Found" on save (#339, #397, #521). See test/realpath.spec.js.
+    const fspath = realpathIfCaseOnly(uri.fsPath);
     uri = vscode.Uri.file(fspath);
     logger.info(`[file-save] ${fspath}`);
     try {
       await uploadFile(uri);
     } catch (error) {
-      logger.error(error, `download ${fspath}`);
+      logger.error(error, `upload ${fspath}`);
       app.sftpBarItem.updateStatus(StatusBarItem.Status.error);
     }
   }

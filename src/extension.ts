@@ -10,15 +10,16 @@ import { tryLoadConfigs } from './modules/config';
 import { getAllFileService, createFileService, disposeFileService } from './modules/serviceManager';
 import { getWorkspaceFolders, setContextValue } from './host';
 import RemoteExplorer from './modules/remoteExplorer';
+import { REPORT_SCHEME, reportProvider } from './ui/operationReport';
 
-async function setupWorkspaceFolder(dir) {
+async function setupWorkspaceFolder(dir: string) {
   const configs = await tryLoadConfigs(dir);
   configs.forEach(config => {
     createFileService(config, dir);
   });
 }
 
-function setup(workspaceFolders: vscode.WorkspaceFolder[]) {
+function setup(workspaceFolders: readonly vscode.WorkspaceFolder[]) {
   fileActivityMonitor.init();
   const pendingInits = workspaceFolders.map(folder => setupWorkspaceFolder(folder.uri.fsPath));
 
@@ -33,6 +34,10 @@ export async function activate(context: vscode.ExtensionContext) {
   } catch (error) {
     reportError(error, 'initCommands');
   }
+
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(REPORT_SCHEME, reportProvider)
+  );
 
   const workspaceFolders = getWorkspaceFolders();
   if (!workspaceFolders) {

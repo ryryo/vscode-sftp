@@ -22,14 +22,20 @@ class _Resource {
   constructor(uri: Uri) {
     this._uri = uri;
     if (UResource.isRemote(uri)) {
-      const query = querystring.parse<{ [x: string]: string }>(this._uri.query);
-      this._remoteId = parseInt(query.remoteId, 10);
+      const query = querystring.parse(this._uri.query);
+      const remoteId = query.remoteId;
+      const fsPath = query.fsPath;
 
-      if (query.fsPath === undefined) {
+      if (typeof remoteId !== 'string') {
+        throw new Error(`remoteId is missing in remote uri ${this._uri}.`);
+      }
+      this._remoteId = parseInt(remoteId, 10);
+
+      if (typeof fsPath !== 'string') {
         throw new Error(`fsPath is missing in remote uri ${this._uri}.`);
       }
 
-      this._fsPath = query.fsPath;
+      this._fsPath = fsPath;
     } else {
       this._fsPath = this._uri.fsPath;
     }

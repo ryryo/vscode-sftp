@@ -1,6 +1,26 @@
+const Ajv = require('ajv');
+const fs = require('fs');
+const path = require('path');
 const Joi = require('joi');
 
 const nullable = schema => schema.optional().allow(null);
+
+const schemaDir = path.join(__dirname, '..', 'schema');
+const ajv = new Ajv({ allErrors: true, strict: false });
+ajv.addSchema(
+  JSON.parse(fs.readFileSync(path.join(schemaDir, 'definitions.json'), 'utf8')),
+  'definitions.json',
+);
+const validateSftpConfig = ajv.compile(
+  JSON.parse(fs.readFileSync(path.join(schemaDir, 'sftp.schema.json'), 'utf8')),
+);
+
+const baseSftpSchemaConfig = {
+  name: 'test',
+  host: 'host',
+  username: 'username',
+  protocol: 'sftp',
+};
 
 const configScheme = {
   context: Joi.string(),
@@ -250,6 +270,50 @@ describe("validation config", () => {
         convert: false,
       });
       expect(result.error).toBe(null);
+    });
+
+    test("algorithms accept array or append/prepend/remove object form", () => {
+      const arrayForm = {
+        ...baseSftpSchemaConfig,
+        algorithms: {
+          kex: ['diffie-hellman-group1-sha1'],
+          cipher: ['aes128-ctr'],
+          serverHostKey: ['ssh-rsa'],
+          hmac: ['hmac-sha2-256'],
+        },
+      };
+      expect(validateSftpConfig(arrayForm)).toBe(true);
+
+      const modifierForm = {
+        ...baseSftpSchemaConfig,
+        algorithms: {
+          kex: { append: ['diffie-hellman-group1-sha1'] },
+          cipher: { prepend: ['aes128-cbc'] },
+          serverHostKey: { remove: ['ssh-dss'] },
+          hmac: {
+            append: ['hmac-sha1'],
+            prepend: ['hmac-md5'],
+            remove: ['hmac-sha2-512-96'],
+          },
+        },
+      };
+      expect(validateSftpConfig(modifierForm)).toBe(true);
+
+      const invalidArrayValue = {
+        ...baseSftpSchemaConfig,
+        algorithms: {
+          kex: ['not-a-known-kex'],
+        },
+      };
+      expect(validateSftpConfig(invalidArrayValue)).toBe(false);
+
+      const invalidModifierProperty = {
+        ...baseSftpSchemaConfig,
+        algorithms: {
+          kex: { append: ['diffie-hellman-group1-sha1'], extra: true },
+        },
+      };
+      expect(validateSftpConfig(invalidModifierProperty)).toBe(false);
     });
 
     test("pass", () => {

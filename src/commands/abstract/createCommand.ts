@@ -2,8 +2,23 @@ import { Uri, window } from 'vscode';
 import logger from '../../logger';
 import { reportError } from '../../helper';
 import { handleCtxFromUri, allHandleCtxFromUri, FileHandlerContext } from '../../fileHandlers';
+import {
+  runWithTransferProgress,
+  transferProgressTitle,
+} from '../../fileHandlers/transfer';
 import { COMMAND_UPLOAD_FILE_TO_ALL_PROFILES, COMMAND_UPLOAD_FOLDER_TO_ALL_PROFILES } from '../../constants';
+import * as operationReport from '../../ui/operationReport';
 import Command from './command';
+
+function reportKind(id: string): operationReport.ReportKind | null {
+  if (/^sftp\.upload\./.test(id)) return 'upload';
+  if (/^sftp\.download\./.test(id)) return 'download';
+  if (/^sftp\.sync\.localToRemote/.test(id)) return 'upload';
+  if (/^sftp\.sync\.remoteToLocal/.test(id)) return 'download';
+  if (/^sftp\.sync\./.test(id)) return 'upload';
+  if (/^sftp\.delete\./.test(id)) return 'delete';
+  return null;
+}
 
 interface BaseCommandOption {
   id: string;
@@ -61,15 +76,24 @@ export function createFileCommand(commandOption: FileCommandOption & { name: str
       }
 
       const targetList: Uri[] = Array.isArray(target) ? target : [target];
-      const pendingTasks = targetList.map(async uri => {
+      const run = () => Promise.all(targetList.map(async uri => {
         try {
           await commandOption.handleFile(handleCtxFromUri(uri));
         } catch (error) {
           reportError(error);
         }
-      });
+      }));
 
-      await Promise.all(pendingTasks);
+      const title = transferProgressTitle(this.id);
+      const kind = reportKind(this.id);
+      const runWithProgress = title
+        ? () => runWithTransferProgress(this.id, run)
+        : run;
+      if (kind) {
+        await operationReport.withReport(kind, runWithProgress);
+      } else {
+        await runWithProgress();
+      }
     }
   };
 }
@@ -95,15 +119,24 @@ export function createFileMultiCommand(commandOption: FileCommandOption & { name
       }
 
       const targetList: Uri[] = Array.isArray(target) ? target : [target];
-      const pendingTasks = targetList.map(async uri => {
+      const run = () => Promise.all(targetList.map(async uri => {
         try {
           await Promise.all(allHandleCtxFromUri(uri).map(commandOption.handleFile));
         } catch (error) {
           reportError(error);
         }
-      });
+      }));
 
-      await Promise.all(pendingTasks);
+      const title = transferProgressTitle(this.id);
+      const kind = reportKind(this.id);
+      const runWithProgress = title
+        ? () => runWithTransferProgress(this.id, run)
+        : run;
+      if (kind) {
+        await operationReport.withReport(kind, runWithProgress);
+      } else {
+        await runWithProgress();
+      }
     }
   };
 }

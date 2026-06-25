@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { EXTENSION_NAME } from './constants';
 
-export function getOpenTextDocuments(): vscode.TextDocument[] {
+export function getOpenTextDocuments(): readonly vscode.TextDocument[] {
   return vscode.workspace.textDocuments;
 }
 
@@ -36,7 +36,7 @@ export function getActiveTextEditor() {
   return vscode.window.activeTextEditor;
 }
 
-export function getWorkspaceFolders() {
+export function getWorkspaceFolders(): readonly vscode.WorkspaceFolder[] | undefined {
   return vscode.workspace.workspaceFolders;
 }
 

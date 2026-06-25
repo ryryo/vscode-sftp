@@ -54,6 +54,7 @@ export const COMMAND_LIST = 'sftp.list';
 export const COMMAND_LIST_ACTIVEFOLDER = 'sftp.listActiveFolder';
 export const COMMAND_LIST_ALL = 'sftp.listAll';
 export const COMMAND_DELETE_REMOTE = 'sftp.delete.remote';
+export const COMMAND_CHMOD_REMOTE = 'sftp.chmod.remote';
 export const COMMAND_REVEAL_IN_EXPLORER = 'sftp.revealInExplorer';
 export const COMMAND_REVEAL_IN_REMOTE_EXPLORER = 'sftp.revealInRemoteExplorer';
 
@@ -61,6 +62,15 @@ export const COMMAND_REMOTEEXPLORER_REFRESH = 'sftp.remoteExplorer.refresh';
 export const COMMAND_REMOTEEXPLORER_REFRESH_ACTIVE_FILE = "sftp.remoteExplorer.refreshActiveFile"
 export const COMMAND_REMOTEEXPLORER_EDITINLOCAL = 'sftp.remoteExplorer.editInLocal';
 export const COMMAND_REMOTEEXPLORER_VIEW_CONTENT = 'sftp.viewContent';
+export const COMMAND_REMOTEEXPLORER_COPY_PATH = 'sftp.remoteExplorer.copyPath';
+export const COMMAND_REMOTEEXPLORER_OPEN_BY_PATH = 'sftp.remoteExplorer.openByPath';
+export const COMMAND_REMOTEEXPLORER_CALC_FOLDER_SIZE = 'sftp.remoteExplorer.calculateFolderSize';
+export const COMMAND_REMOTEEXPLORER_SORT_BY_SIZE = 'sftp.remoteExplorer.sortTreeBySize';
+export const COMMAND_REMOTEEXPLORER_SORT_BY_NAME = 'sftp.remoteExplorer.sortTreeByName';
+export const COMMAND_REMOTEEXPLORER_SHOW_SIZES = 'sftp.remoteExplorer.showSizes';
+export const COMMAND_REMOTEEXPLORER_HIDE_SIZES = 'sftp.remoteExplorer.hideSizes';
+export const COMMAND_REMOTEEXPLORER_MEASURING_SIZES = 'sftp.remoteExplorer.measuringSizes';
 
 export const COMMAND_CREATE_FOLDER = 'sftp.create.folder';
 export const COMMAND_CREATE_FILE = 'sftp.create.file';
+export const COMMAND_RENAME = 'sftp.rename';

@@ -4,6 +4,7 @@ import logger from '../../logger';
 import { FileEntry, FileType, FileStats, FileOption } from './fileSystem';
 import RemoteFileSystem from './remoteFileSystem';
 import { FTPClient } from '../remote-client';
+import { isUnsafeRemoteSegment } from '../../utils';
 
 interface FtpFileHandle {
   path: string;
@@ -26,12 +27,29 @@ function toNumMode(rightObj) {
     const rightStr = rightObj[key];
     let cur = 0;
     for (const char of rightStr) {
-      cur += numMap[char];
+      const value = numMap[char];
+      if (value !== undefined) {
+        cur += value;
+      } else if (char === 's' || char === 't') {
+        // setuid/setgid/sticky with the execute bit set ('rws', 'rwt') — count the x bit;
+        // 'S'/'T' (no execute) and anything else unknown contribute nothing. Previously any
+        // unknown character produced NaN for the whole mode.
+        cur += numMap.x;
+      }
     }
     return modeStr + cur;
   }, '');
 
-  return parseInt(modeStr, 8);
+  const mode = parseInt(modeStr, 8);
+  return isNaN(mode) ? 0o666 : mode;
+}
+
+// FTP control-channel commands are CRLF-terminated lines; a path with '\r'/'\n' would smuggle in a
+// second command. Listing entries are already filtered, but guard the direct entry points too.
+function assertFtpSafePath(path: string): void {
+  if (/[\r\n\0]/.test(path)) {
+    throw new Error(`illegal characters in remote path: ${JSON.stringify(path)}`);
+  }
 }
 
 export default class FTPFileSystem extends RemoteFileSystem {
@@ -90,6 +108,7 @@ export default class FTPFileSystem extends RemoteFileSystem {
       };
     }
 
+    assertFtpSafePath(path);
     const parentPath = this.pathResolver.dirname(path);
     const nameIdentity = this.pathResolver.basename(path);
     const stats = await this.list(parentPath);
@@ -129,6 +148,7 @@ export default class FTPFileSystem extends RemoteFileSystem {
   }
 
   async get(path, _option?: FileOption): Promise<Readable> {
+    assertFtpSafePath(path);
     const stream = await this.atomicGet(path);
 
     if (!stream) {
@@ -139,11 +159,13 @@ export default class FTPFileSystem extends RemoteFileSystem {
   }
 
   async chmod(path: string, mode: number): Promise<void> {
+    assertFtpSafePath(path);
     const command = `CHMOD ${mode.toString(8)} ${path}`;
     return await this.atomicSite(command);
   }
 
   async put(input: Readable, path, _option?: FileOption): Promise<void> {
+    assertFtpSafePath(path);
     let inputError: Error | undefined;
     input.once('error', err => {
       inputError = err;
@@ -166,11 +188,16 @@ export default class FTPFileSystem extends RemoteFileSystem {
   }
 
   symlink(_targetPath: string, _path: string): Promise<void> {
-    // TO-DO implement
-    return Promise.resolve();
+    // The legacy FTP protocol/library has no command to create a symlink. Returning success here
+    // silently dropped the link during a folder upload/sync — it just never appeared on the server.
+    // Reject (with a code transferSymlink won't swallow) so the entry is reported as failed instead.
+    return Promise.reject(
+      Object.assign(new Error('FTP does not support creating symbolic links'), { code: 'ENOSYS' })
+    );
   }
 
   async mkdir(dir: string): Promise<void> {
+    assertFtpSafePath(dir);
     return await this.atomicMakeDir(dir);
   }
 
@@ -247,14 +274,24 @@ export default class FTPFileSystem extends RemoteFileSystem {
     dir: string,
     { showHiddenFiles = false } = {}
   ): Promise<FileEntry[]> {
+    assertFtpSafePath(dir);
     // -al flag only get partially support
     const stats = await this.atomicList(dir);
 
     return (
       stats
-        // item will be a string if ftp fail to parse it (https://github.com/liximomo/vscode-sftp/issues/308)
+        // item will be a string if ftp fails to parse it (https://github.com/liximomo/vscode-sftp/issues/308)
         // we simply ignore it by check whether it has a name property
-        .filter(item => item.name && item.name !== '.' && item.name !== '..')
+        .filter(item => {
+          if (!item.name) return false;
+          if (isUnsafeRemoteSegment(item.name)) {
+            logger.warn(
+              `ftp: ignoring listing entry with unsafe name ${JSON.stringify(item.name)} in ${dir}`
+            );
+            return false;
+          }
+          return true;
+        })
         .map(item =>
           this.toFileEntry(this.pathResolver.join(dir, item.name), item)
         )
@@ -262,10 +299,12 @@ export default class FTPFileSystem extends RemoteFileSystem {
   }
 
   async unlink(path: string): Promise<void> {
+    assertFtpSafePath(path);
     return await this.atomicDeleteFile(path);
   }
 
   async rmdir(path: string, recursive: boolean): Promise<void> {
+    assertFtpSafePath(path);
     return await this.atomicRemoveDir(path, recursive);
   }
 
@@ -274,6 +313,8 @@ export default class FTPFileSystem extends RemoteFileSystem {
   }
 
   async renameAtomic(srcPath: string, destPath: string): Promise<void> {
+    assertFtpSafePath(srcPath);
+    assertFtpSafePath(destPath);
     const task = () =>
       new Promise<void>((resolve, reject) => {
         this.ftp.rename(srcPath, destPath, err => {
@@ -397,6 +438,7 @@ export default class FTPFileSystem extends RemoteFileSystem {
   }
 
   private async atomicSetLastMod(path: string, date: Date): Promise<void> {
+    assertFtpSafePath(path);
     const task = () =>
       new Promise<void>((resolve, reject) => {
         this.ftp.setLastMod(path, date, err => {

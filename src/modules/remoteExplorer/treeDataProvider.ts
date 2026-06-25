@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { showTextDocument } from '../../host';
+import { showTextDocument, setContextValue } from '../../host';
 import {
   upath,
   UResource,
@@ -9,6 +9,7 @@ import {
   FileEntry,
   Ignore,
   ServiceConfig,
+  FileSystem,
 } from '../../core';
 import {
   COMMAND_REMOTEEXPLORER_VIEW_CONTENT,
@@ -16,6 +17,7 @@ import {
 } from '../../constants';
 import { getAllFileService } from '../serviceManager';
 import { getExtensionSetting } from '../ext';
+import { duSizes } from './folderSize';
 
 type Id = number;
 
@@ -43,6 +45,11 @@ function makePreivewUrl(uri: vscode.Uri) {
 interface ExplorerChild {
   resource: Resource;
   isDirectory: boolean;
+  size?: number;
+  mode?: number;
+  mtime?: number;
+  // Real folder size from a server-side `du`; populated when show/sort-by-size is active.
+  folderBytes?: number;
 }
 
 export interface ExplorerRoot extends ExplorerChild {
@@ -63,27 +70,81 @@ function dirFirstSort(fileA: ExplorerItem, fileB: ExplorerItem) {
   return fileA.isDirectory ? -1 : 1;
 }
 
+function formatBytes(bytes: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let value = bytes;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i += 1;
+  }
+  const text = i === 0 ? String(value) : value.toFixed(value < 10 ? 1 : 0);
+  return `${text} ${units[i]}`;
+}
+
+function formatMode(mode: number): string {
+  // tslint:disable-next-line:no-bitwise
+  const simpleMode = mode & 0o777;
+  const octal = simpleMode.toString(8).padStart(3, '0');
+  const symbols = [0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001]
+    // tslint:disable-next-line:no-bitwise
+    .map((bit, index) => (simpleMode & bit ? 'rwx'[index % 3] : '-'))
+    .join('');
+  return `${octal} (${symbols})`;
+}
+
+function formatTime(ms: number): string {
+  const d = new Date(ms);
+  if (isNaN(d.getTime())) {
+    return '';
+  }
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
+    d.getMinutes()
+  )}`;
+}
+
+function buildTooltip(item: ExplorerItem, isRoot: boolean): string {
+  const lines = [item.resource.fsPath];
+  if (!isRoot && !item.isDirectory && typeof item.size === 'number') {
+    lines.push(`Size: ${formatBytes(item.size)}`);
+  }
+  if (!isRoot && typeof item.mode === 'number') {
+    lines.push(`Permissions: ${formatMode(item.mode)}`);
+  }
+  if (typeof item.mtime === 'number' && item.mtime > 0) {
+    lines.push(`Modified: ${formatTime(item.mtime)}`);
+  }
+  return lines.join('\n');
+}
+
 export default class RemoteTreeData
   implements vscode.TreeDataProvider<ExplorerItem>, vscode.TextDocumentContentProvider {
   private _roots: ExplorerRoot[] | null;
   private _rootsMap: Map<Id, ExplorerRoot> | null;
   private _map: Map<vscode.Uri['query'], ExplorerItem>;
+  private _measuring = new Set<string>();
 
-  private _onDidChangeFolder: vscode.EventEmitter<ExplorerItem> = new vscode.EventEmitter<
-    ExplorerItem
+  private _onDidChangeFolder: vscode.EventEmitter<ExplorerItem | undefined> = new vscode.EventEmitter<
+    ExplorerItem | undefined
   >();
   private _onDidChangeFile: vscode.EventEmitter<vscode.Uri> = new vscode.EventEmitter<vscode.Uri>();
-  readonly onDidChangeTreeData: vscode.Event<ExplorerItem> = this._onDidChangeFolder.event;
+  readonly onDidChangeTreeData: vscode.Event<ExplorerItem | undefined> = this._onDidChangeFolder.event;
   readonly onDidChange: vscode.Event<vscode.Uri> = this._onDidChangeFile.event;
 
   async refresh(item?: ExplorerItem): Promise<any> {
+    if (this._map) {
+      this._map.forEach(node => {
+        node.folderBytes = undefined;
+      });
+    }
     // refresh root
     if (!item) {
       // clear cache
       this._roots = null;
       this._rootsMap = null;
 
-      this._onDidChangeFolder.fire();
+      this._onDidChangeFolder.fire(undefined);
       return;
     }
 
@@ -95,6 +156,7 @@ export default class RemoteTreeData
       children
         .filter(i => !i.isDirectory)
         .forEach(i => this._onDidChangeFile.fire(makePreivewUrl(i.resource.uri)));
+      return children;
     } else {
       const parent = await this.getParent(item);
       if (parent) {
@@ -104,18 +166,37 @@ export default class RemoteTreeData
     }
   }
 
+  refreshItem(item: ExplorerItem): void {
+    this._onDidChangeFolder.fire(item);
+  }
+
+  rerender(): void {
+    this._onDidChangeFolder.fire(undefined);
+  }
+
   getTreeItem(item: ExplorerItem): vscode.TreeItem {
     const isRoot = (item as ExplorerRoot).explorerContext !== undefined;
-    let customLabel;
+    const setting = getExtensionSetting();
+    let customLabel: string | undefined;
+    let description: string | undefined;
     if (isRoot) {
       customLabel = (item as ExplorerRoot).explorerContext.fileService.name;
     }
     if (!customLabel) {
       customLabel = upath.basename(item.resource.fsPath);
     }
+    if (!isRoot && setting.get<boolean>('remoteExplorer.showSize', false)) {
+      if (!item.isDirectory && typeof item.size === 'number') {
+        description = formatBytes(item.size);
+      } else if (item.isDirectory && typeof item.folderBytes === 'number' && item.folderBytes >= 0) {
+        description = formatBytes(item.folderBytes);
+      }
+    }
     return {
       label: customLabel,
+      description,
       resourceUri: item.resource.uri,
+      tooltip: buildTooltip(item, isRoot),
       collapsibleState: item.isDirectory ? vscode.TreeItemCollapsibleState.Collapsed : undefined,
       contextValue: isRoot ? 'root' : item.isDirectory ? 'folder' : 'file',
       command: item.isDirectory
@@ -154,28 +235,110 @@ export default class RemoteTreeData
       return !ignore.ignores(relativePath);
     }
 
-    return fileEntries
-      .filter(filterFile)
-      .map(file => {
-        const isDirectory = file.type === FileType.Directory;
-        const newResource = UResource.updateResource(item.resource, {
+    const filtered = fileEntries.filter(filterFile);
+
+    const items: ExplorerItem[] = filtered.map(file => {
+      const isDirectory = file.type === FileType.Directory;
+      const newResource = UResource.updateResource(item.resource, {
+        remotePath: file.fspath,
+      });
+      const mapItem = this._map.get(newResource.uri.query);
+      if (mapItem) {
+        mapItem.size = file.size;
+        mapItem.mode = file.mode;
+        mapItem.mtime = file.mtime;
+        return mapItem;
+      }
+      const newItem = {
+        resource: UResource.updateResource(item.resource, {
           remotePath: file.fspath,
-        });
-        const mapItem = this._map.get(newResource.uri.query);
-        if (mapItem) {
-          return mapItem;
-        } else {
-          const newItem = {
-            resource: UResource.updateResource(item.resource, {
-              remotePath: file.fspath,
-            }),
-            isDirectory,
-          };
-          this._map.set(newItem.resource.uri.query, newItem);
-          return newItem;
+        }),
+        isDirectory,
+        size: file.size,
+        mode: file.mode,
+        mtime: file.mtime,
+      };
+      this._map.set(newItem.resource.uri.query, newItem);
+      return newItem;
+    });
+
+    const setting = getExtensionSetting();
+    const sortBySize = setting.get<boolean>('remoteExplorer.sortBySize', false);
+    const showSize = setting.get<boolean>('remoteExplorer.showSize', false);
+    if (sortBySize || showSize) {
+      const unmeasured = items.filter(i => i.isDirectory && typeof i.folderBytes !== 'number');
+      if (unmeasured.length > 0) {
+        this._measureFolderSizes(remotefs, unmeasured, item).catch(() => undefined);
+      }
+    }
+
+    if (!sortBySize) {
+      return items.sort(dirFirstSort);
+    }
+    const dirs = items.filter(i => i.isDirectory);
+    const files = items.filter(i => !i.isDirectory);
+    const folderBytesOf = (i: ExplorerItem) => (typeof i.folderBytes === 'number' ? i.folderBytes : -1);
+    dirs.sort(
+      (a, b) => folderBytesOf(b) - folderBytesOf(a) || a.resource.fsPath.localeCompare(b.resource.fsPath)
+    );
+    files.sort(
+      (a, b) => (b.size || 0) - (a.size || 0) || a.resource.fsPath.localeCompare(b.resource.fsPath)
+    );
+    return dirs.concat(files);
+  }
+
+  private async _measureFolderSizes(
+    remotefs: FileSystem,
+    folders: ExplorerItem[],
+    parent: ExplorerItem
+  ): Promise<void> {
+    const key = parent.resource.uri.query;
+    if (this._measuring.has(key)) {
+      return;
+    }
+    this._measuring.add(key);
+    setContextValue('measuringSizes', true);
+    try {
+      const sizes = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Window,
+          title: 'SFTP: requesting folder sizes from your server — this takes a moment, please wait…',
+        },
+        () => duSizes(remotefs, folders.map(f => f.resource.fsPath))
+      );
+      let changed = false;
+      for (const folder of folders) {
+        const bytes = sizes.has(folder.resource.fsPath)
+          ? (sizes.get(folder.resource.fsPath) as number)
+          : -1;
+        if (folder.folderBytes !== bytes) {
+          folder.folderBytes = bytes;
+          changed = true;
         }
-      })
-      .sort(dirFirstSort);
+      }
+      if (changed) {
+        this._onDidChangeFolder.fire(parent);
+      }
+    } finally {
+      this._measuring.delete(key);
+      if (this._measuring.size === 0) {
+        setContextValue('measuringSizes', false);
+      }
+    }
+  }
+
+  pinKnownType(resource: Resource, isDirectory: boolean): ExplorerItem | undefined {
+    if (!this._map) {
+      return undefined;
+    }
+    const existing = this._map.get(resource.uri.query);
+    if (existing) {
+      existing.isDirectory = isDirectory;
+      return existing;
+    }
+    const node: ExplorerChild = { resource, isDirectory };
+    this._map.set(resource.uri.query, node);
+    return node;
   }
 
   async getParent(item: ExplorerChild): Promise<ExplorerItem> {
@@ -205,6 +368,10 @@ export default class RemoteTreeData
       await this.getChildren(newMapItem);
       return newMapItem;
     }
+  }
+
+  getRoots(): ExplorerRoot[] {
+    return this._getRoots();
   }
 
   findRoot(uri: vscode.Uri): ExplorerRoot | null | undefined {

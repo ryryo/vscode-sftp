@@ -6,11 +6,15 @@
 主な目的は、Cursor / VS Code 1.123 以降に同梱される Node.js 24 系で発生する SFTP download/upload の失敗を回避することです。元 issue は [Natizyskunk/vscode-sftp#590](https://github.com/Natizyskunk/vscode-sftp/issues/590) です。
 
 ## 更新情報
+- `1.17.0` では保守中フォークの `v2.4.18` を参照し、このフォークに必要な範囲だけを backport しました。
+- Remote Explorer にパスコピー、パス指定で開く、ホバー情報、chmod、ローカル / リモート / 両方の削除、サイズ表示、サイズ順ソート、Size & MD5 レポートを追加しました。
+- 転送 UX として進捗表示、キャンセル、完了通知、操作レポート、スマートオープンを追加しました。
+- 安全性・堅牢性として、双方向同期、case-only rename、realpath / UNC / symlink / subst drive 対応、明示設定時のみの legacy DH、SSH / FTP 周辺の検証とクリーンアップを強化しました。
 - `ssh2` を `^1.13.0` から `^1.17.0` に更新し、Node.js 24 系で `TypeError: isDate is not a function` が発生する問題を修正しました。
 - Jest 28 の transformer API 変更に合わせてテスト前処理を更新しました。
 - 既存の TypeScript compile エラーを修正し、`npm test -- --runInBand` と `npm run compile` が成功する状態にしました。
 - テスト環境の Node.js 24 対応として `memfs` を `^3.6.0` に更新し、scheduler spec の open handle を解消しました。
-- このフォーク用の VSIX は `sftp-node24-fix-1.16.3.vsix` として生成できます。
+- このフォーク用の VSIX は `sftp-node24-fix-1.17.0.vsix` として生成できます。
 
 [@Natizyskunk](https://github.com/Natizyskunk/) による、メンテナンスおよび更新を継続している新バージョンです 😀 <!-- and [@satiromarra](https://github.com/satiromarra) --> <br>
 （メンテナンスが終了した [liximomo の SFTP プラグイン](https://github.com/liximomo/vscode-sftp.git) からフォーク）
