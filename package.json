@@ -40,7 +40,7 @@
         {
           "id": "sftp",
           "title": "SFTP",
-          "icon": "resources/remote-explorer.svg"
+          "icon": "$(remote-explorer)"
         }
       ]
     },
