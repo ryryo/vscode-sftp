@@ -1,9 +1,9 @@
 {
-  "name": "sftp",
-  "displayName": "SFTP",
+  "name": "sftp-node24-fix",
+  "displayName": "SFTP (Node 24 Fix)",
   "description": "SFTP/FTP sync",
   "version": "1.16.3",
-  "publisher": "Natizyskunk",
+  "publisher": "ryryo",
   "author": "Natizyskunk <natan.fourie@hotmail.fr> (https://github.com/Natizyskunk)",
   "engines": {
     "vscode": "^1.64.2"
