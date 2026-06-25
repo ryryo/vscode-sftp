@@ -211,7 +211,13 @@ export default class TransferTask implements Task {
       }
 
     } finally {
-      await targetFs.close(uploadFd);
+      try {
+        await targetFs.close(uploadFd);
+      } catch (error) {
+        if (!error || error.code !== 'EBADF') {
+          throw error;
+        }
+      }
     }
   }
 }

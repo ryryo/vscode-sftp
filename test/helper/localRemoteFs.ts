@@ -6,8 +6,28 @@ import RemoteFileSystem from '../../src/core/fs/remoteFileSystem';
 
 // @ts-ignore
 export default class LocalRemoteFileSystem extends RemoteFileSystem {
+  private _fdPathMap: { [fd: number]: string } = {};
+
   _createClient() {
     return {};
+  }
+
+  async open(path: string, flags: string, mode?: number): Promise<number> {
+    const fd = await localfs.open(path, flags, mode);
+    this._fdPathMap[fd] = path;
+    return fd;
+  }
+
+  async close(fd: number): Promise<void> {
+    try {
+      await localfs.close(fd);
+    } catch (error) {
+      if (!error || error.code !== 'EBADF') {
+        throw error;
+      }
+    } finally {
+      delete this._fdPathMap[fd];
+    }
   }
 
   toFileStat(stat: fs.Stats): FileStats {
@@ -21,19 +41,21 @@ export default class LocalRemoteFileSystem extends RemoteFileSystem {
   }
 
   futimes(fd: number, atime: number, mtime: number): Promise<void> {
-    return fse.futimes(
-      fd,
-      this.toRemoteTimeInSecnonds(atime),
-      this.toRemoteTimeInSecnonds(mtime)
-    );
+    const remoteAtime = this.toRemoteTimeInSecnonds(atime);
+    const remoteMtime = this.toRemoteTimeInSecnonds(mtime);
+    return fse.futimes(fd, remoteAtime, remoteMtime).catch(error => {
+      const path = this._fdPathMap[fd];
+      if (!path || !error || error.code !== 'EBADF') {
+        throw error;
+      }
+      return fse.utimes(path, remoteAtime, remoteMtime);
+    });
   }
 }
 
 [
   'toFileEntry',
   'readFile',
-  'open',
-  'close',
   'fstat',
   'get',
   'put',
