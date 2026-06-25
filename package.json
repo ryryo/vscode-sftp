@@ -28,6 +28,7 @@
     "remote"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onCommand:sftp.config",
     "workspaceContains:.vscode/sftp.json"
   ],
